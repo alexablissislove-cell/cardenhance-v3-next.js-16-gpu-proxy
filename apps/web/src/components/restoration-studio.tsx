@@ -70,6 +70,23 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_000_000).toFixed(2)} MB`;
 }
 
+function waitForDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = () => {
+      window.clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+      reject(new DOMException("Stopped waiting", "AbortError"));
+    };
+    const timeout = window.setTimeout(finish, milliseconds);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
 async function requestServiceStatus(): Promise<ServiceStatus> {
   try {
     const response = await fetch("/api/health", { cache: "no-store" });
@@ -332,13 +349,11 @@ export function RestorationStudio() {
     [cards, processBufferLocal]
   );
 
-  // Optional Server GPU /api/restore pass (when FastAPI PyTorch backend is connected)
   const runGpuRestoreOnSelected = useCallback(async () => {
     const selected = cards.filter((c) => c.selected);
     if (!selected.length || processing) return;
 
     if (!service.configured || !service.ready) {
-      // Run local browser adaptive pipeline when GPU backend is not configured
       await runBatchLocal(selected.map((c) => c.id));
       showToast(`Adaptive browser restoration completed on ${selected.length} selected card(s)`);
       return;
@@ -351,46 +366,80 @@ export function RestorationStudio() {
 
     try {
       for (const target of selected) {
-        const respBlob = await fetch(target.processedUrl).then((r) => r.blob());
-        const body = new FormData();
-        body.append("image", new File([respBlob], target.filename, { type: "image/png" }));
-        body.append("tileSize", String(tileSize));
-        body.append("tileOverlap", String(tileOverlap));
-        body.append("outputFormat", outputFormat);
-        body.append("amp", String(amp));
+        const sourceResponse = await fetch(target.processedUrl, { signal: controller.signal });
+        if (!sourceResponse.ok) throw new Error("Could not prepare the source scan.");
+        const sourceBlob = await sourceResponse.blob();
+        const form = new FormData();
+        form.append("image", new File([sourceBlob], target.filename, { type: sourceBlob.type || "image/png" }));
+        form.append("tileSize", String(tileSize));
+        form.append("tileOverlap", String(tileOverlap));
+        form.append("outputFormat", outputFormat);
+        form.append("amp", String(amp));
 
-        const response = await fetch("/api/restore", {
+        const createResponse = await fetch("/api/restore/jobs", {
           method: "POST",
-          body,
+          body: form,
           signal: controller.signal,
         });
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-          throw new Error(payload?.error ?? `GPU restoration failed with HTTP ${response.status}`);
+        const created = (await createResponse.json().catch(() => null)) as
+          | { jobId?: string; accessToken?: string; error?: string }
+          | null;
+        if (!createResponse.ok || !created?.jobId || !created.accessToken) {
+          throw new Error(created?.error ?? "Could not queue the restoration job.");
         }
-        const restored = await response.blob();
-        if (!restored.type.startsWith("image/")) {
-          throw new Error("The GPU service returned an invalid image.");
+
+        const authorization = { Authorization: `Bearer ${created.accessToken}` };
+        const deadline = Date.now() + 15 * 60 * 1000;
+        let completed = false;
+        while (Date.now() < deadline) {
+          const statusResponse = await fetch(`/api/restore/jobs/${created.jobId}`, {
+            headers: authorization,
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          const status = (await statusResponse.json().catch(() => null)) as
+            | { status?: string; attempts?: number; error?: string }
+            | null;
+          if (!statusResponse.ok || !status) {
+            throw new Error(status?.error ?? "Could not read the restoration job status.");
+          }
+
+          if (status.status === "succeeded") {
+            const resultResponse = await fetch(`/api/restore/jobs/${created.jobId}/result`, {
+              headers: authorization,
+              cache: "no-store",
+              signal: controller.signal,
+            });
+            if (!resultResponse.ok) throw new Error("The restored image could not be retrieved.");
+            const restored = await resultResponse.blob();
+            if (!restored.type.startsWith("image/")) {
+              throw new Error("The GPU service returned an invalid image.");
+            }
+            const gpuUrl = URL.createObjectURL(restored);
+            setCards((prev) =>
+              prev.map((card) =>
+                card.id === target.id
+                  ? { ...card, processedUrl: gpuUrl, gpuEnhanced: true, inferenceMs: null }
+                  : card,
+              ),
+            );
+            completed = true;
+            break;
+          }
+
+          if (status.status === "failed" && (status.attempts ?? 0) >= 3) {
+            throw new Error(status.error ?? "Restoration failed after three attempts.");
+          }
+
+          await waitForDelay(2000, controller.signal);
         }
-        const gpuUrl = URL.createObjectURL(restored);
-        const elapsed = Number(response.headers.get("x-inference-ms"));
-        setCards((prev) =>
-          prev.map((c) =>
-            c.id === target.id
-              ? {
-                  ...c,
-                  processedUrl: gpuUrl,
-                  gpuEnhanced: true,
-                  inferenceMs: Number.isFinite(elapsed) && elapsed > 0 ? elapsed : null,
-                }
-              : c
-          )
-        );
+
+        if (!completed) throw new Error("The job is still running. You can keep this page open and retry the selection later.");
       }
-      showToast(`Completed RaGAN GPU restoration on ${selected.length} card(s)`);
+      showToast(`Completed durable GPU restoration on ${selected.length} card(s)`);
     } catch (reason) {
       if (reason instanceof Error && reason.name === "AbortError") {
-        setError("Restoration cancelled. Your source scan is unchanged.");
+        setError("Stopped waiting for the job. It may continue in the background.");
       } else {
         setError(reason instanceof Error ? reason.message : "Restoration failed unexpectedly.");
       }
@@ -887,7 +936,7 @@ export function RestorationStudio() {
                     style={{ backgroundColor: "#FF3366", color: "#080808" }}
                   >
                     <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                    Cancel
+                    Stop waiting
                   </button>
                 ) : (
                   <button
