@@ -502,6 +502,7 @@ export function RestorationStudio() {
   );
 
   const ready = service.configured && service.ready;
+  const executionMode = ready ? "GPU READY" : "LOCAL WORKER";
 
   const navItems = [
     { id: "dashboard", label: "Dashboard", tag: "01", icon: LayoutDashboard },
@@ -719,6 +720,38 @@ export function RestorationStudio() {
           </div>
         )}
 
+        <section
+          aria-label="Processing architecture"
+          className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+        >
+          <div
+            className="p-3 font-mono text-[11px]"
+            style={{ backgroundColor: "#0C1210", border: "1px solid #00FFFF" }}
+          >
+            <div className="mb-1 text-[#00FFFF]">01 / EXECUTION</div>
+            <strong className="text-[#EAFFFB]">{executionMode}</strong>
+            <p className="mt-1 text-[#EAFFFB]/60">
+              {ready ? "Private FastAPI proxy with bearer auth." : "Browser fallback is ready now."}
+            </p>
+          </div>
+          <div
+            className="p-3 font-mono text-[11px]"
+            style={{ backgroundColor: "#0C1210", border: "1px solid #0A3D3D" }}
+          >
+            <div className="mb-1 text-[#00FF66]">02 / SECURITY</div>
+            <strong className="text-[#EAFFFB]">SERVER-ONLY KEY</strong>
+            <p className="mt-1 text-[#EAFFFB]/60">Credentials stay in Next.js route handlers.</p>
+          </div>
+          <div
+            className="p-3 font-mono text-[11px]"
+            style={{ backgroundColor: "#0C1210", border: "1px solid #0A3D3D" }}
+          >
+            <div className="mb-1 text-[#00FF66]">03 / TELEMETRY</div>
+            <strong className="text-[#EAFFFB]">{counts.total} SCANS</strong>
+            <p className="mt-1 text-[#EAFFFB]/60">Audit JSON and image downloads remain local.</p>
+          </div>
+        </section>
+
         {/* ================================================================= */}
         {/* ROUTE 02: STUDIO / BATCH EDITOR                                   */}
         {/* ================================================================= */}
@@ -869,7 +902,9 @@ export function RestorationStudio() {
                     }}
                   >
                     <Play className="h-3.5 w-3.5 fill-current" />
-                    {processing ? "Processing..." : `Run on ${counts.selected} selected`}
+                    {processing
+                      ? "Processing..."
+                      : `${ready ? "Run GPU on" : "Run local on"} ${counts.selected} selected`}
                   </button>
                 )}
               </div>
