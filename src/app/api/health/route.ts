@@ -1,6 +1,7 @@
 import { inferenceEndpoint, inferenceHeaders, maxImageBytes } from "@/lib/server/config";
 import type { ServiceStatus } from "@/lib/types";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
