@@ -1,7 +1,7 @@
 import { routes, type Redirect, type VercelConfig } from '@vercel/config/v1';
 
 export const config: VercelConfig = {
-  buildCommand: 'pnpm run build',
+  buildCommand: 'npm run build',
   framework: 'nextjs',
   rewrites: [
     routes.rewrite('/api/(.*)', 'https://backend.example.com/$1'),
